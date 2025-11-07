@@ -30,7 +30,7 @@ for domain in "${DOMAINS[@]}"; do
     echo "Restore $domain..."
 
     # Tạo site Webinoly
-    sudo webinoly -site="$domain" -le -cache=on > /dev/null 2>&1
+    sudo webinoly -site="$domain" -cache=on > /dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo "LỖI: Tạo site $domain thất bại (kiểm tra domain/DNS)"
         continue

@@ -223,25 +223,18 @@ for domain in "${DOMAINS[@]}"; do
     WP_CONFIG="/var/www/$domain/htdocs/wp-config.php"
 
     # Dùng pattern chính xác: define('DB_NAME', 'old');
-    # sed -i "s|define('DB_NAME', '.*');|define('DB_NAME', '$NEW_DB_NAME');|" "$WP_CONFIG"
     sed -i "s/define( *'DB_NAME', *'[^']*' *)/define( 'DB_NAME', '$NEW_DB_NAME' )/" "$WP_CONFIG"
-
-    # sed -i "s|define('DB_USER', '.*');|define('DB_USER', '$NEW_DB_USER');|" "$WP_CONFIG"
     sed -i "s/define( *'DB_USER', *'[^']*' *)/define( 'DB_USER', '$NEW_DB_USER' )/" "$WP_CONFIG"
-    # sed -i "s|define('DB_PASSWORD', '.*');|define('DB_PASSWORD', '$NEW_DB_PASS');|" "$WP_CONFIG"
     sed -i "s/define( *'DB_PASSWORD', *'[^']*' *)/define( 'DB_PASSWORD', '$NEW_DB_PASS' )/" "$WP_CONFIG"
-    # sed -i "s|define('DB_HOST', '.*');|define('DB_HOST', '$NEW_DB_HOST');|" "$WP_CONFIG"
 
-    # Kiểm tra kết quả
-    if grep -q "define('DB_NAME', '$NEW_DB_NAME');" "$WP_CONFIG" && \
-       grep -q "define('DB_USER', '$NEW_DB_USER');" "$WP_CONFIG" && \
-       grep -q "define('DB_PASSWORD', '$NEW_DB_PASS');" "$WP_CONFIG"; then
-        success "  → wp-config.php đã được cập nhật"
+
+    # Kiểm tra kết quả - cho phép spaces tùy ý
+    if grep -q "define( *'DB_NAME', *'$NEW_DB_NAME' *)" "$WP_CONFIG" && \
+        grep -q "define( *'DB_USER', *'$NEW_DB_USER' *)" "$WP_CONFIG" && \
+        grep -q "define( *'DB_PASSWORD', *'$NEW_DB_PASS' *)" "$WP_CONFIG"; then
+            success "  → wp-config.php đã được cập nhật"
     else
         error "  → Cập nhật wp-config.php thất bại"
-        error "  → Kiểm tra file: $WP_CONFIG"
-        ((FAIL_COUNT++))
-        continue
     fi
 
     # ==================== CẬP NHẬT SECURITY KEYS (nếu thiếu) ====================

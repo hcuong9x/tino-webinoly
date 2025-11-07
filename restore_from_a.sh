@@ -282,8 +282,8 @@ if [ $SUCCESS_COUNT -gt 0 ]; then
     echo "  1. Kiểm tra sites: sudo webinoly -info"
     echo "  2. Test từng domain trong browser"
     echo "  3. Update DNS A records về IP mới"
-    echo "  4. Flush cache: wp cache flush (nếu dùng WP-CLI)"
-    echo "  5. Xóa backup: rm -rf $BACKUP_DIR"
+    echo "  4. sudo site ${domain} -cache=on  -ssl=on -wp-admin=off"
+    echo "  5. sudo httpauth ${domain} -wp-admin=off"
 fi
 
 exit 0

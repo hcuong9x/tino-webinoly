@@ -64,22 +64,83 @@ if ! command -v webinoly &> /dev/null; then
     fi
 fi
 
-# Kiểm tra Webinoly stack
-if ! webinoly -info | grep -q "Nginx"; then
-    warn "Webinoly stack chưa hoàn chỉnh"
-    log "Chạy: sudo webinoly -stack=lemp"
-fi
+# ==================== KIỂM TRA WEBINOLY STACK ====================
+WEBINOLY_INFO=$(webinoly -info 2>/dev/null)
 
-# ==================== NHẬP MYSQL PASSWORD ====================
-read -s -p "Nhập MySQL root password: " MYSQL_ROOT_PASS
-echo
-
-# Test MySQL connection
-if ! mysql -u root -p"$MYSQL_ROOT_PASS" -e "SELECT 1" >/dev/null 2>&1; then
-    error "MySQL password không đúng hoặc MySQL chưa chạy"
+if [ -z "$WEBINOLY_INFO" ]; then
+    error "Không thể lấy thông tin Webinoly"
     exit 1
 fi
-success "Kết nối MySQL thành công"
+
+# Kiểm tra qua section headers (cách 1)
+HAS_NGINX_SECTION=$(echo "$WEBINOLY_INFO" | grep -q "^\[NGINX\]" && echo "yes" || echo "no")
+HAS_PHP_SECTION=$(echo "$WEBINOLY_INFO" | grep -q "^\[PHP\]" && echo "yes" || echo "no")
+HAS_MYSQL_SECTION=$(echo "$WEBINOLY_INFO" | grep -q "^\[MYSQL\]" && echo "yes" || echo "no")
+
+# Kiểm tra qua internal flags (cách 2 - fallback)
+HAS_NGINX_FLAG=$(echo "$WEBINOLY_INFO" | grep -q "nginx:true" && echo "yes" || echo "no")
+HAS_PHP_FLAG=$(echo "$WEBINOLY_INFO" | grep -q "php:true" && echo "yes" || echo "no")
+HAS_MYSQL_FLAG=$(echo "$WEBINOLY_INFO" | grep -q "mysql:true" && echo "yes" || echo "no")
+
+# Kiểm tra kết hợp cả 2 cách
+NGINX_OK=$([[ "$HAS_NGINX_SECTION" = "yes" || "$HAS_NGINX_FLAG" = "yes" ]] && echo "yes" || echo "no")
+PHP_OK=$([[ "$HAS_PHP_SECTION" = "yes" || "$HAS_PHP_FLAG" = "yes" ]] && echo "yes" || echo "no")
+MYSQL_OK=$([[ "$HAS_MYSQL_SECTION" = "yes" || "$HAS_MYSQL_FLAG" = "yes" ]] && echo "yes" || echo "no")
+
+if [ "$NGINX_OK" = "no" ] || [ "$PHP_OK" = "no" ] || [ "$MYSQL_OK" = "no" ]; then
+    error "Webinoly stack chưa hoàn chỉnh:"
+    [ "$NGINX_OK" = "no" ] && error "  - Nginx: CHƯA CÀI"
+    [ "$PHP_OK" = "no" ] && error "  - PHP: CHƯA CÀI"
+    [ "$MYSQL_OK" = "no" ] && error "  - MySQL/MariaDB: CHƯA CÀI"
+    echo ""
+    log "Cài đặt stack: sudo webinoly -stack=lemp"
+    exit 1
+fi
+
+# Lấy thông tin version
+NGINX_VER=$(echo "$WEBINOLY_INFO" | grep "^Version:" | head -1 | awk '{print $2}')
+PHP_VER=$(echo "$WEBINOLY_INFO" | grep "php-ver:" | cut -d: -f2)
+MYSQL_VER=$(echo "$WEBINOLY_INFO" | grep "mysql-ver:" | cut -d: -f2)
+
+success "Webinoly Stack OK:"
+info "  - Nginx: $NGINX_VER"
+info "  - PHP: $PHP_VER"
+info "  - MySQL/MariaDB: $MYSQL_VER"
+
+# ==================== KIỂM TRA & LẤY MYSQL PASSWORD ====================
+# Webinoly lưu MySQL root password trong internal config
+MYSQL_ROOT_ENCODED=$(echo "$WEBINOLY_INFO" | grep "mysql-root:" | cut -d: -f2)
+
+if [ -n "$MYSQL_ROOT_ENCODED" ]; then
+    # Decode password (base64)
+    MYSQL_ROOT_PASS=$(echo "$MYSQL_ROOT_ENCODED" | base64 -d 2>/dev/null)
+    
+    if [ -n "$MYSQL_ROOT_PASS" ]; then
+        info "Đã lấy MySQL root password từ Webinoly config"
+        
+        # Test connection
+        if mysql -u root -p"$MYSQL_ROOT_PASS" -e "SELECT 1" >/dev/null 2>&1; then
+            success "Kết nối MySQL thành công (tự động)"
+        else
+            warn "Password từ Webinoly không hoạt động"
+            MYSQL_ROOT_PASS=""
+        fi
+    fi
+fi
+
+# Nếu không lấy được hoặc sai, yêu cầu nhập manual
+if [ -z "$MYSQL_ROOT_PASS" ]; then
+    read -s -p "Nhập MySQL root password: " MYSQL_ROOT_PASS
+    echo
+    
+    # Test connection
+    if ! mysql -u root -p"$MYSQL_ROOT_PASS" -e "SELECT 1" >/dev/null 2>&1; then
+        error "MySQL password không đúng hoặc MySQL chưa chạy"
+        error "Kiểm tra: sudo systemctl status mysql"
+        exit 1
+    fi
+    success "Kết nối MySQL thành công"
+fi
 
 # ==================== TÌM DOMAINS ====================
 log "Quét backup files trong $BACKUP_DIR..."

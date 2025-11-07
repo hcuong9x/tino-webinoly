@@ -72,29 +72,6 @@ if [ -z "$WEBINOLY_INFO" ]; then
     exit 1
 fi
 
-HAS_NGINX=$(echo "$WEBINOLY_INFO" | grep -Eq "^\[NGINX\]|nginx:true" && echo "yes" || echo "no")
-HAS_PHP=$(echo "$WEBINOLY_INFO" | grep -Eq "^\[PHP\]|php:true" && echo "yes" || echo "no")
-HAS_MYSQL=$(echo "$WEBINOLY_INFO" | grep -Eq "^\[MYSQL\]|mysql:true" && echo "yes" || echo "no")
-
-if [ "$HAS_NGINX" = "no" ] || [ "$HAS_PHP" = "no" ] || [ "$HAS_MYSQL" = "no" ]; then
-    error "Webinoly stack chưa hoàn chỉnh:"
-    [ "$HAS_NGINX" = "no" ] && error "  - Nginx: CHƯA CÀI"
-    [ "$HAS_PHP" = "no" ] && error "  - PHP: CHƯA CÀI"
-    [ "$HAS_MYSQL" = "no" ] && error "  - MariaDB: CHƯA CÀI"
-    echo ""
-    log "Cài đặt stack: sudo webinoly -stack=lemp"
-    exit 1
-fi
-
-NGINX_VER=$(echo "$WEBINOLY_INFO" | grep "^Version:" | head -1 | awk '{print $2}')
-PHP_VER=$(echo "$WEBINOLY_INFO" | grep "php-ver:" | cut -d: -f2)
-MYSQL_VER=$(echo "$WEBINOLY_INFO" | grep -E "mysql-ver:|mariadb-ver:" | cut -d: -f2 | head -1)
-
-success "Webinoly Stack OK:"
-info "  - Nginx: $NGINX_VER"
-info "  - PHP: $PHP_VER"
-info "  - MariaDB: $MYSQL_VER"
-
 # ==================== PHƯƠNG THỨC KẾT NỐI MYSQL (ƯU TIÊN) ====================
 MYSQL_ROOT_PASS=""
 MYSQL_CMD=""

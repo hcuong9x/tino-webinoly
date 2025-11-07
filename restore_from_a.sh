@@ -137,17 +137,19 @@ for domain in "${DOMAINS[@]}"; do
     log "  → Tạo site với Webinoly..."
     
     if [ -d "/var/www/$domain" ]; then
-        warn "  → Site đã tồn tại, sẽ ghi đè"
-        webinoly -site="$domain" -delete=force >/dev/null 2>&1
+        warn "  → Site đã tồn tại, xóa trước..."
+        exit 1
     fi
-    
-    if ! webinoly -site="$domain" -cache=on -wp=yes >/dev/null 2>&1; then
+
+    WEBINOLY_OUTPUT=$(sudo site "$domain" -wp -cache=on 2>&1)
+    if [ $? -ne 0 ]; then
         error "  → Lỗi tạo site $domain"
+        echo "$WEBINOLY_OUTPUT" | sed 's/^/    → /' | tee -a "$LOG_FILE"
         ((FAIL_COUNT++))
         continue
     fi
-    
-    success "  → Site đã được tạo"
+
+    success "  → Site $domain đã được tạo"
     
     # ==================== EXTRACT FILES ====================
     log "  → Giải nén files..."

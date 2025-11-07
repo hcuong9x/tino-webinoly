@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==================== CONFIG ====================
-SCRIPT_VERSION="2.0"
+SCRIPT_VERSION="2.2"
 LOG_FILE="/var/log/wp_restore_$(date +%Y%m%d_%H%M%S).log"
 BACKUP_DIR="/tmp/wp_migration"
 
@@ -72,74 +72,70 @@ if [ -z "$WEBINOLY_INFO" ]; then
     exit 1
 fi
 
-# Kiểm tra qua section headers (cách 1)
-HAS_NGINX_SECTION=$(echo "$WEBINOLY_INFO" | grep -q "^\[NGINX\]" && echo "yes" || echo "no")
-HAS_PHP_SECTION=$(echo "$WEBINOLY_INFO" | grep -q "^\[PHP\]" && echo "yes" || echo "no")
-HAS_MYSQL_SECTION=$(echo "$WEBINOLY_INFO" | grep -q "^\[MYSQL\]" && echo "yes" || echo "no")
+HAS_NGINX=$(echo "$WEBINOLY_INFO" | grep -Eq "^\[NGINX\]|nginx:true" && echo "yes" || echo "no")
+HAS_PHP=$(echo "$WEBINOLY_INFO" | grep -Eq "^\[PHP\]|php:true" && echo "yes" || echo "no")
+HAS_MYSQL=$(echo "$WEBINOLY_INFO" | grep -Eq "^\[MYSQL\]|mysql:true" && echo "yes" || echo "no")
 
-# Kiểm tra qua internal flags (cách 2 - fallback)
-HAS_NGINX_FLAG=$(echo "$WEBINOLY_INFO" | grep -q "nginx:true" && echo "yes" || echo "no")
-HAS_PHP_FLAG=$(echo "$WEBINOLY_INFO" | grep -q "php:true" && echo "yes" || echo "no")
-HAS_MYSQL_FLAG=$(echo "$WEBINOLY_INFO" | grep -q "mysql:true" && echo "yes" || echo "no")
-
-# Kiểm tra kết hợp cả 2 cách
-NGINX_OK=$([[ "$HAS_NGINX_SECTION" = "yes" || "$HAS_NGINX_FLAG" = "yes" ]] && echo "yes" || echo "no")
-PHP_OK=$([[ "$HAS_PHP_SECTION" = "yes" || "$HAS_PHP_FLAG" = "yes" ]] && echo "yes" || echo "no")
-MYSQL_OK=$([[ "$HAS_MYSQL_SECTION" = "yes" || "$HAS_MYSQL_FLAG" = "yes" ]] && echo "yes" || echo "no")
-
-if [ "$NGINX_OK" = "no" ] || [ "$PHP_OK" = "no" ] || [ "$MYSQL_OK" = "no" ]; then
+if [ "$HAS_NGINX" = "no" ] || [ "$HAS_PHP" = "no" ] || [ "$HAS_MYSQL" = "no" ]; then
     error "Webinoly stack chưa hoàn chỉnh:"
-    [ "$NGINX_OK" = "no" ] && error "  - Nginx: CHƯA CÀI"
-    [ "$PHP_OK" = "no" ] && error "  - PHP: CHƯA CÀI"
-    [ "$MYSQL_OK" = "no" ] && error "  - MySQL/MariaDB: CHƯA CÀI"
+    [ "$HAS_NGINX" = "no" ] && error "  - Nginx: CHƯA CÀI"
+    [ "$HAS_PHP" = "no" ] && error "  - PHP: CHƯA CÀI"
+    [ "$HAS_MYSQL" = "no" ] && error "  - MariaDB: CHƯA CÀI"
     echo ""
     log "Cài đặt stack: sudo webinoly -stack=lemp"
     exit 1
 fi
 
-# Lấy thông tin version
 NGINX_VER=$(echo "$WEBINOLY_INFO" | grep "^Version:" | head -1 | awk '{print $2}')
 PHP_VER=$(echo "$WEBINOLY_INFO" | grep "php-ver:" | cut -d: -f2)
-MYSQL_VER=$(echo "$WEBINOLY_INFO" | grep "mysql-ver:" | cut -d: -f2)
+MYSQL_VER=$(echo "$WEBINOLY_INFO" | grep -E "mysql-ver:|mariadb-ver:" | cut -d: -f2 | head -1)
 
 success "Webinoly Stack OK:"
 info "  - Nginx: $NGINX_VER"
 info "  - PHP: $PHP_VER"
-info "  - MySQL/MariaDB: $MYSQL_VER"
+info "  - MariaDB: $MYSQL_VER"
 
-# ==================== KIỂM TRA & LẤY MYSQL PASSWORD ====================
-# Webinoly lưu MySQL root password trong internal config
-MYSQL_ROOT_ENCODED=$(echo "$WEBINOLY_INFO" | grep "mysql-root:" | cut -d: -f2)
+# ==================== PHƯƠNG THỨC KẾT NỐI MYSQL (ƯU TIÊN) ====================
+MYSQL_ROOT_PASS=""
+MYSQL_CMD=""
 
-if [ -n "$MYSQL_ROOT_ENCODED" ]; then
-    # Decode password (base64)
-    MYSQL_ROOT_PASS=$(echo "$MYSQL_ROOT_ENCODED" | base64 -d 2>/dev/null)
+# 1. Ưu tiên: Dùng `sudo mysql` (unix_socket auth) → không cần pass
+if sudo mysql -e "SELECT 1" >/dev/null 2>&1; then
+    success "Kết nối MariaDB thành công qua sudo mysql (unix_socket)"
+    MYSQL_CMD="sudo mysql"
     
-    if [ -n "$MYSQL_ROOT_PASS" ]; then
-        info "Đã lấy MySQL root password từ Webinoly config"
-        
-        # Test connection
-        if mysql -u root -p"$MYSQL_ROOT_PASS" -e "SELECT 1" >/dev/null 2>&1; then
-            success "Kết nối MySQL thành công (tự động)"
-        else
-            warn "Password từ Webinoly không hoạt động"
-            MYSQL_ROOT_PASS=""
-        fi
+# 2. Nếu không, thử lấy pass từ Webinoly
+elif MYSQL_ROOT_ENCODED=$(echo "$WEBINOLY_INFO" | grep "mysql-root:" | cut -d: -f2) && [ -n "$MYSQL_ROOT_ENCODED" ]; then
+    MYSQL_ROOT_PASS=$(echo "$MYSQL_ROOT_ENCODED" | base64 -d 2>/dev/null)
+    if [ -n "$MYSQL_ROOT_PASS" ] && mysql -u root -p"$MYSQL_ROOT_PASS" -e "SELECT 1" >/dev/null 2>&1; then
+        success "Kết nối MariaDB thành công (Webinoly password)"
+        MYSQL_CMD="mysql -u root -p'$MYSQL_ROOT_PASS'"
     fi
 fi
 
-# Nếu không lấy được hoặc sai, yêu cầu nhập manual
-if [ -z "$MYSQL_ROOT_PASS" ]; then
-    read -s -p "Nhập MySQL root password: " MYSQL_ROOT_PASS
+# 3. Cuối cùng: Nhập tay
+if [ -z "$MYSQL_CMD" ]; then
+    read -s -p "Nhập MariaDB root password: " MYSQL_ROOT_PASS
     echo
-    
-    # Test connection
-    if ! mysql -u root -p"$MYSQL_ROOT_PASS" -e "SELECT 1" >/dev/null 2>&1; then
-        error "MySQL password không đúng hoặc MySQL chưa chạy"
-        error "Kiểm tra: sudo systemctl status mysql"
+    if mysql -u root -p"$MYSQL_ROOT_PASS" -e "SELECT 1" >/dev/null 2>&1; then
+        success "Kết nối MariaDB thành công"
+        MYSQL_CMD="mysql -u root -p'$MYSQL_ROOT_PASS'"
+    else
+        error "MariaDB password không đúng hoặc MariaDB chưa chạy"
+        error "Kiểm tra: sudo systemctl status mariadb"
         exit 1
     fi
-    success "Kết nối MySQL thành công"
+fi
+
+# Hàm chạy MySQL với phương thức đã chọn
+mysql_exec() {
+    eval "$MYSQL_CMD" "$@"
+}
+
+# Test lại lần cuối
+if ! mysql_exec -e "SELECT 1" >/dev/null 2>&1; then
+    error "Không thể kết nối MariaDB bằng phương thức đã chọn"
+    exit 1
 fi
 
 # ==================== TÌM DOMAINS ====================
@@ -158,7 +154,6 @@ fi
 log "Tìm thấy ${#DOMAINS[@]} domain(s): ${DOMAINS[*]}"
 echo ""
 
-# Confirm
 read -p "Tiếp tục restore? (y/n): " CONFIRM
 [[ ! "$CONFIRM" =~ ^[Yy]$ ]] && { log "Hủy bởi user"; exit 0; }
 
@@ -172,7 +167,6 @@ echo "--------------------------------------------------"
 for domain in "${DOMAINS[@]}"; do
     log "Đang restore: $domain"
     
-    # Kiểm tra files tồn tại
     SQL_FILE="$BACKUP_DIR/${domain}.sql"
     TAR_FILE="$BACKUP_DIR/${domain}_files.tar.gz"
     
@@ -185,13 +179,11 @@ for domain in "${DOMAINS[@]}"; do
     # ==================== TẠO SITE WEBINOLY ====================
     log "  → Tạo site với Webinoly..."
     
-    # Xóa site cũ nếu tồn tại (optional)
     if [ -d "/var/www/$domain" ]; then
         warn "  → Site đã tồn tại, sẽ ghi đè"
         webinoly -site="$domain" -delete=force >/dev/null 2>&1
     fi
     
-    # Tạo site mới
     if ! webinoly -site="$domain" -cache=on -wp=yes >/dev/null 2>&1; then
         error "  → Lỗi tạo site $domain"
         ((FAIL_COUNT++))
@@ -213,12 +205,12 @@ for domain in "${DOMAINS[@]}"; do
         continue
     fi
     
-    # Copy files vào htdocs (Webinoly structure)
     if [ -d "$TEMP_EXTRACT/public_html" ]; then
-        rm -rf "/var/www/$domain/htdocs"/*
-        cp -r "$TEMP_EXTRACT/public_html/"* "/var/www/$domain/htdocs/" 2>/dev/null
+        rm -rf "/var/www/$domain/htdocs/"*
+        cp -r "$TEMP_EXTRACT/public_html/"* "/var/www/$domain/htdocs/" 2>/dev/null || \
+        cp -r "$TEMP_EXTRACT/public_html/." "/var/www/$domain/htdocs/" 2>/dev/null
     else
-        error "  → Cấu trúc backup không đúng"
+        error "  → Cấu trúc backup không đúng (thiếu public_html)"
         rm -rf "$TEMP_EXTRACT"
         ((FAIL_COUNT++))
         continue
@@ -252,11 +244,9 @@ for domain in "${DOMAINS[@]}"; do
     # ==================== TẠO DATABASE & USER ====================
     log "  → Tạo database và user..."
     
-    # Xóa DB cũ nếu tồn tại
-    mysql -u root -p"$MYSQL_ROOT_PASS" -e "DROP DATABASE IF EXISTS \`$DB_NAME\`;" 2>/dev/null
+    mysql_exec -e "DROP DATABASE IF EXISTS \`$DB_NAME\`;" 2>/dev/null
     
-    # Tạo DB mới
-    mysql -u root -p"$MYSQL_ROOT_PASS" -e "
+    mysql_exec -e "
         CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
         CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
         GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost';
@@ -275,7 +265,7 @@ for domain in "${DOMAINS[@]}"; do
     if [ -f "$SQL_FILE" ]; then
         log "  → Import database..."
         
-        if mysql -u root -p"$MYSQL_ROOT_PASS" "$DB_NAME" < "$SQL_FILE" 2>/dev/null; then
+        if mysql_exec "$DB_NAME" < "$SQL_FILE" 2>/dev/null; then
             success "  → Database imported"
         else
             error "  → Lỗi import database"
@@ -288,16 +278,15 @@ for domain in "${DOMAINS[@]}"; do
     # ==================== CẬP NHẬT WP-CONFIG ====================
     log "  → Cập nhật wp-config.php..."
     
-    # Fix DB_HOST nếu cần
     if [ "$DB_HOST" != "localhost" ]; then
-        sed -i "s/'DB_HOST'.*/'DB_HOST', 'localhost');/g" "$WP_CONFIG"
+        sed -i "s|define( *'DB_HOST', *.*);|define( 'DB_HOST', 'localhost' );|g" "$WP_CONFIG"
     fi
     
-    # Add security keys nếu thiếu
     if ! grep -q "AUTH_KEY" "$WP_CONFIG"; then
         warn "  → Thiếu security keys, thêm mới..."
         SALT=$(curl -sL https://api.wordpress.org/secret-key/1.1/salt/)
-        sed -i "/DB_COLLATE/a\\$SALT" "$WP_CONFIG"
+        sed -i "/\/\*.*stop editing.*\*\//i $SALT" "$WP_CONFIG" 2>/dev/null || \
+        sed -i "/DB_COLLATE/a $SALT" "$WP_CONFIG"
     fi
     
     # ==================== FIX PERMISSIONS ====================
@@ -309,10 +298,10 @@ for domain in "${DOMAINS[@]}"; do
     
     # ==================== SSL (Optional) ====================
     log "  → Cài đặt SSL..."
-    if webinoly -ssl="$domain" -letsencrypt >/dev/null 2>&1; then
-        success "  → SSL installed"
+    if webinoly -ssl="$domain" -letsencrypt=on >/dev/null 2>&1; then
+        success "  → SSL installed (Let's Encrypt)"
     else
-        warn "  → SSL failed (chạy manual sau)"
+        warn "  → SSL failed (chạy manual sau: webinoly -ssl=$domain)"
     fi
     
     # ==================== CLEANUP ====================

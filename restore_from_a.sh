@@ -229,7 +229,7 @@ for domain in "${DOMAINS[@]}"; do
     # sed -i "s|define('DB_USER', '.*');|define('DB_USER', '$NEW_DB_USER');|" "$WP_CONFIG"
     sed -i "s/define( *'DB_USER', *'[^']*' *)/define( 'DB_USER', '$NEW_DB_USER' )/" "$WP_CONFIG"
     # sed -i "s|define('DB_PASSWORD', '.*');|define('DB_PASSWORD', '$NEW_DB_PASS');|" "$WP_CONFIG"
-    sed -i "s/define( *'DB_PASSWORD', *'[^']*' *)/define( 'DB_PASSWORD', '$NEW_DB_PASSWORD' )/" "$WP_CONFIG"
+    sed -i "s/define( *'DB_PASSWORD', *'[^']*' *)/define( 'DB_PASSWORD', '$NEW_DB_PASS' )/" "$WP_CONFIG"
     # sed -i "s|define('DB_HOST', '.*');|define('DB_HOST', '$NEW_DB_HOST');|" "$WP_CONFIG"
 
     # Kiểm tra kết quả

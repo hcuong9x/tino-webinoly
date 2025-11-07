@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==================== CONFIG ====================
-SCRIPT_VERSION="2.2"
+SCRIPT_VERSION="2.3"
 LOG_FILE="/var/log/wp_restore_$(date +%Y%m%d_%H%M%S).log"
 BACKUP_DIR="/tmp/wp_migration"
 
@@ -47,21 +47,7 @@ fi
 # ==================== KIỂM TRA WEBINOLY ====================
 if ! command -v webinoly &> /dev/null; then
     warn "Webinoly chưa được cài đặt"
-    read -p "Cài đặt Webinoly ngay? (y/n): " INSTALL_WEBINOLY
-    
-    if [[ "$INSTALL_WEBINOLY" =~ ^[Yy]$ ]]; then
-        log "Đang cài đặt Webinoly..."
-        wget -qO weby qrok.es/wy && sudo bash weby
-        
-        if ! command -v webinoly &> /dev/null; then
-            error "Cài đặt Webinoly thất bại"
-            exit 1
-        fi
-        success "Webinoly đã được cài đặt"
-    else
-        error "Cần Webinoly để tiếp tục"
-        exit 1
-    fi
+    exit 1
 fi
 
 # ==================== KIỂM TRA WEBINOLY STACK ====================
@@ -73,10 +59,9 @@ if [ -z "$WEBINOLY_INFO" ]; then
 fi
 
 # ==================== PHƯƠNG THỨC KẾT NỐI MYSQL (ƯU TIÊN) ====================
-MYSQL_ROOT_PASS=""
 MYSQL_CMD=""
 
-# 1. Ưu tiên: Dùng `sudo mysql` (unix_socket auth) → không cần pass
+# 1. Ưu tiên: sudo mysql (unix_socket)
 if sudo mysql -e "SELECT 1" >/dev/null 2>&1; then
     success "Kết nối MariaDB thành công qua sudo mysql (unix_socket)"
     MYSQL_CMD="sudo mysql"
@@ -90,28 +75,14 @@ elif MYSQL_ROOT_ENCODED=$(echo "$WEBINOLY_INFO" | grep "mysql-root:" | cut -d: -
     fi
 fi
 
-# 3. Cuối cùng: Nhập tay
-if [ -z "$MYSQL_CMD" ]; then
-    read -s -p "Nhập MariaDB root password: " MYSQL_ROOT_PASS
-    echo
-    if mysql -u root -p"$MYSQL_ROOT_PASS" -e "SELECT 1" >/dev/null 2>&1; then
-        success "Kết nối MariaDB thành công"
-        MYSQL_CMD="mysql -u root -p'$MYSQL_ROOT_PASS'"
-    else
-        error "MariaDB password không đúng hoặc MariaDB chưa chạy"
-        error "Kiểm tra: sudo systemctl status mariadb"
-        exit 1
-    fi
-fi
-
-# Hàm chạy MySQL với phương thức đã chọn
+# Hàm chạy MySQL
 mysql_exec() {
     eval "$MYSQL_CMD" "$@"
 }
 
-# Test lại lần cuối
+# Test lại
 if ! mysql_exec -e "SELECT 1" >/dev/null 2>&1; then
-    error "Không thể kết nối MariaDB bằng phương thức đã chọn"
+    error "Không thể kết nối MariaDB"
     exit 1
 fi
 
@@ -196,91 +167,89 @@ for domain in "${DOMAINS[@]}"; do
     rm -rf "$TEMP_EXTRACT"
     success "  → Files đã được extract"
     
-    # ==================== ĐỌC WP-CONFIG ====================
-    WP_CONFIG="/var/www/$domain/htdocs/wp-config.php"
+    # ==================== TẠO DATABASE & USER (DÙNG WEBINOLY) ====================
+    log "  → Tạo database mới bằng Webinoly..."
     
-    if [ ! -f "$WP_CONFIG" ]; then
-        error "  → Không tìm thấy wp-config.php"
+    MYSQL_OUTPUT=$(sudo site -mysql 2>/dev/null)
+    if [ $? -ne 0 ] || [ -z "$MYSQL_OUTPUT" ]; then
+        error "  → Lỗi tạo database bằng Webinoly"
         ((FAIL_COUNT++))
         continue
     fi
-    
-    DB_NAME=$(grep "DB_NAME" "$WP_CONFIG" | cut -d"'" -f4)
-    DB_USER=$(grep "DB_USER" "$WP_CONFIG" | cut -d"'" -f4)
-    DB_PASS=$(grep "DB_PASSWORD" "$WP_CONFIG" | cut -d"'" -f4)
-    DB_HOST=$(grep "DB_HOST" "$WP_CONFIG" | cut -d"'" -f4)
-    
-    if [ -z "$DB_NAME" ]; then
-        error "  → Không đọc được DB config"
+
+    NEW_DB_NAME=$(echo "$MYSQL_OUTPUT" | grep "Database Name:" | awk '{print $NF}')
+    NEW_DB_USER=$(echo "$MYSQL_OUTPUT" | grep "Database User:" | awk '{print $NF}')
+    NEW_DB_PASS=$(echo "$MYSQL_OUTPUT" | grep "Password:" | awk '{print $NF}')
+    NEW_DB_HOST=$(echo "$MYSQL_OUTPUT" | grep "Database Host:" | awk '{print $NF}')
+
+    if [ -z "$NEW_DB_NAME" ] || [ -z "$NEW_DB_USER" ] || [ -z "$NEW_DB_PASS" ]; then
+        error "  → Không lấy được thông tin DB từ Webinoly"
         ((FAIL_COUNT++))
         continue
     fi
-    
-    log "  → DB: $DB_NAME | User: $DB_USER"
-    
-    # ==================== TẠO DATABASE & USER ====================
-    log "  → Tạo database và user..."
-    
-    mysql_exec -e "DROP DATABASE IF EXISTS \`$DB_NAME\`;" 2>/dev/null
-    
-    mysql_exec -e "
-        CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-        CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
-        GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost';
-        FLUSH PRIVILEGES;
-    " >/dev/null 2>&1
-    
-    if [ $? -eq 0 ]; then
-        success "  → Database created: $DB_NAME"
-    else
-        error "  → Lỗi tạo database"
-        ((FAIL_COUNT++))
-        continue
-    fi
-    
-    # ==================== IMPORT DATABASE ====================
+
+    success "  → Database mới: $NEW_DB_NAME"
+    info "      User: $NEW_DB_USER | Pass: $NEW_DB_PASS | Host: $NEW_DB_HOST"
+    log "DB_INFO: $domain → $NEW_DB_NAME / $NEW_DB_USER / $NEW_DB_PASS"
+
+    # ==================== IMPORT DATABASE (nếu có file SQL) ====================
     if [ -f "$SQL_FILE" ]; then
-        log "  → Import database..."
+        log "  → Import dữ liệu cũ vào database mới..."
         
-        if mysql_exec "$DB_NAME" < "$SQL_FILE" 2>/dev/null; then
-            success "  → Database imported"
+        if mysql_exec "$NEW_DB_NAME" < "$SQL_FILE" 2>/dev/null; then
+            success "  → Database imported vào $NEW_DB_NAME"
         else
-            error "  → Lỗi import database"
-            warn "  → Site vẫn tạo nhưng DB trống"
+            error "  → Lỗi import database vào $NEW_DB_NAME"
+            warn "  → Site vẫn hoạt động nhưng DB trống"
         fi
     else
-        warn "  → Không tìm thấy file SQL, skip import"
+        warn "  → Không có file .sql → DB mới nhưng trống"
     fi
-    
-    # ==================== CẬP NHẬT WP-CONFIG ====================
-    log "  → Cập nhật wp-config.php..."
-    
-    if [ "$DB_HOST" != "localhost" ]; then
-        sed -i "s|define( *'DB_HOST', *.*);|define( 'DB_HOST', 'localhost' );|g" "$WP_CONFIG"
+
+    # ==================== CẬP NHẬT wp-config.php VỚI DB MỚI ====================
+    log "  → Cập nhật wp-config.php với DB mới..."
+
+    WP_CONFIG="/var/www/$domain/htdocs/wp-config.php"
+
+    sed -i "s|define( *'DB_NAME', * *').*('|define( 'DB_NAME', '$NEW_DB_NAME' );|" "$WP_CONFIG"
+    sed -i "s|define( *'DB_USER', * *').*('|define( 'DB_USER', '$NEW_DB_USER' );|" "$WP_CONFIG"
+    sed -i "s|define( *'DB_PASSWORD', * *').*('|define( 'DB_PASSWORD', '$NEW_DB_PASS' );|" "$WP_CONFIG"
+    sed -i "s|define( *'DB_HOST', * *').*('|define( 'DB_HOST', '$NEW_DB_HOST' );|" "$WP_CONFIG"
+
+    if grep -q "DB_NAME.*$NEW_DB_NAME" "$WP_CONFIG" && \
+       grep -q "DB_USER.*$NEW_DB_USER" "$WP_CONFIG" && \
+       grep -q "DB_PASSWORD.*$NEW_DB_PASS" "$WP_CONFIG"; then
+        success "  → wp-config.php đã được cập nhật"
+    else
+        error "  → Cập nhật wp-config.php thất bại"
+        ((FAIL_COUNT++))
+        continue
     fi
-    
+
+    # ==================== CẬP NHẬT SECURITY KEYS (nếu thiếu) ====================
+    log "  → Kiểm tra security keys..."
     if ! grep -q "AUTH_KEY" "$WP_CONFIG"; then
         warn "  → Thiếu security keys, thêm mới..."
         SALT=$(curl -sL https://api.wordpress.org/secret-key/1.1/salt/)
         sed -i "/\/\*.*stop editing.*\*\//i $SALT" "$WP_CONFIG" 2>/dev/null || \
         sed -i "/DB_COLLATE/a $SALT" "$WP_CONFIG"
     fi
-    
+
     # ==================== FIX PERMISSIONS ====================
     log "  → Fix permissions..."
     chown -R www-data:www-data "/var/www/$domain"
     find "/var/www/$domain/htdocs" -type d -exec chmod 755 {} \;
     find "/var/www/$domain/htdocs" -type f -exec chmod 644 {} \;
     chmod 600 "$WP_CONFIG"
-    
+
     # ==================== SSL (Optional) ====================
     log "  → Cài đặt SSL..."
     if webinoly -ssl="$domain" -letsencrypt=on >/dev/null 2>&1; then
         success "  → SSL installed (Let's Encrypt)"
     else
-        warn "  → SSL failed (chạy manual sau: webinoly -ssl=$domain)"
+        warn "  → SSL failed (chạy manual: webinoly -ssl=$domain)"
     fi
-    
+
     # ==================== CLEANUP ====================
     rm -f "$SQL_FILE" "$TAR_FILE"
     

@@ -72,17 +72,26 @@ elif MYSQL_ROOT_ENCODED=$(echo "$WEBINOLY_INFO" | grep "mysql-root:" | cut -d: -
     if [ -n "$MYSQL_ROOT_PASS" ] && mysql -u root -p"$MYSQL_ROOT_PASS" -e "SELECT 1" >/dev/null 2>&1; then
         success "Kết nối MariaDB thành công (Webinoly password)"
         MYSQL_CMD="mysql -u root -p'$MYSQL_ROOT_PASS'"
+    else
+        error "Không thể kết nối MariaDB với password từ Webinoly"
+        exit 1
     fi
 fi
 
-# Hàm chạy MySQL
+# ==================== HÀM CHẠY MYSQL AN TOÀN ====================
 mysql_exec() {
-    eval "$MYSQL_CMD" "$@"
+    if [[ "$MYSQL_CMD" == "sudo mysql" ]]; then
+        # Dùng sudo mysql → không cần -u root -p
+        sudo mysql "$@"
+    else
+        # Dùng mysql với user/pass
+        eval "$MYSQL_CMD" "$@"
+    fi
 }
 
-# Test lại
+# Test lại lần cuối
 if ! mysql_exec -e "SELECT 1" >/dev/null 2>&1; then
-    error "Không thể kết nối MariaDB"
+    error "Không thể kết nối MariaDB bằng phương thức đã chọn"
     exit 1
 fi
 
